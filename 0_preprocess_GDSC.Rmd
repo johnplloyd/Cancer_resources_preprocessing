@@ -1,0 +1,911 @@
+---
+title: "Processing GDSC drug response and functional genomics data"
+author: "John P. Lloyd"
+date: "16 September 2019"
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+# Purpose
+Provide a reproducible description of the processing of drug response and functional genomics data downloaded from the GDSC cell line database.
+
+# Import utilities
+```{r, import_utilities}
+util <- "C:/Users/johnp/OneDrive/_Projects/R_utils.R"
+#fn <- "F0_preprocess_fn.R"
+
+source(util)
+#source(fn)
+```
+
+# Section 1: Drug response
+
+Drug response data was provided as an Excel spreadsheet that could be downloaded directly from cancerrxgene.org (part of GDSC database)
+https://www.cancerrxgene.org/downloads/bulk_download > Drug Screening - IC50s > GDSC2-dataset
+
+Direct link to file: ftp://ftp.sanger.ac.uk/pub/project/cancerrxgene/releases/release-8.0/GDSC1_fitted_dose_response_17Jul19.xlsx
+
+The drug response file was from the 8.0 release (file uploaded: 18 July 2019) and downloaded by JPL on 16 September 2019.
+
+The spreadsheet was opened in Excel and saved as a tab-delimited text file, as I find fewer hiccups when importing text files into R. No changes were made to the original spreadsheet file (other than conversion to text file).
+
+## Initial data import
+
+```{r, import_drug_response}
+FILE.drug_response <- "../data/GDSC/0_original_retrievals/GDSC2_fitted_dose_response_17Jul19.txt"
+m.drug_response <- read.table( file = FILE.drug_response, header = T, sep = "\t", comment.char = "", stringsAsFactors = F )
+
+dim(m.drug_response)
+head(m.drug_response)
+
+#saveRDS( object = m.drug_response, file = "../data/GDSC/GDSC2_fitted_dose_response_17Jul19.RDS" )
+
+keep_names.IC50_AUC <- c( "CELL_LINE_NAME", "TCGA_DESC", "DRUG_NAME", "PUTATIVE_TARGET", "PATHWAY_NAME", "LN_IC50", "AUC", "RMSE" )
+m.drug_response.IC50_AUC <- m.drug_response[ keep_names.IC50_AUC ]
+
+dim(m.drug_response.IC50_AUC)
+head(m.drug_response.IC50_AUC)
+
+# https://www.cancerrxgene.org/faq
+# "Where the RMSE is > 0.3 the fit is considered poor and the results have been filtered from further analysis."
+length(which(m.drug_response.IC50_AUC[,8] > 0.3))
+
+# CANCER TYPES
+length(unique(m.drug_response.IC50_AUC[,2]))
+unique(m.drug_response.IC50_AUC[,2])
+
+# DRUG TABLE
+drug_table <- table(m.drug_response.IC50_AUC[,3])
+drug_table
+length(drug_table)
+
+# TOTAL # OF CELL LINES
+length(unique(m.drug_response.IC50_AUC[,1]))
+
+# Full drug X cell line matrix should be 169 X 810
+```
+
+## Develop drug X cell line matrix
+
+The drug response data in the original file are provided in a single column for all drugs, while the drug is provided in a separate column. I will next convert this single column into a matrix. Note that there are 810 unique cell lines, not all of which have response data for each drug so NAs will need to be inserted for missing data.
+
+The function to perform the conversion is here:
+```{r, convert_drug_response_column_FXN}
+convert_drug_response_column <- function( X, cell_line_index, drug_index, response_index){
+  
+  # head(m.drug_response.IC50_AUC)
+  # X <- m.drug_response.IC50_AUC
+  # cell_line_index <- 1
+  # drug_index <- 3
+  # response_index <- 6
+  
+  full_cell_lines <- sort(unique(X[,cell_line_index]))
+  full_cell_lines
+  length(full_cell_lines)
+  
+  full_drugs <- unique(X[,drug_index])
+  full_drugs
+  length(full_drugs)
+  
+  df_response <- data.frame( row.names = full_cell_lines )
+  for(i in 1:length(full_drugs)){
+    drug <- full_drugs[i]
+    drug
+    
+    drug_i <- which(X[,drug_index] == drug)
+    
+    name_vec <- X[ drug_i, cell_line_index ]
+    drug_vec <- X[ drug_i, drug_index ]
+    response_vec <- X[ drug_i, response_index ]
+    
+    length(name_vec)
+    
+    head(name_vec)
+    unique(drug_vec)
+    head(response_vec)
+    
+    names(response_vec) <- name_vec
+    
+    head(response_vec)
+    
+    if(length(name_vec) < length(full_cell_lines)){
+      missing_IDs <- setdiff(full_cell_lines, name_vec)
+      missing_vec <- rep( NA, length(missing_IDs) )
+      names(missing_vec) <- missing_IDs
+      head(missing_vec)
+      
+      response_vec <- c( response_vec, missing_vec )
+    }
+    
+    head(response_vec)
+    tail(response_vec)
+    
+    response_vec <- response_vec[ full_cell_lines ]
+    
+    all.equal( row.names(df_response), names(response_vec) )
+    
+    df_response <- cbind( df_response, response_vec )
+    names(df_response)[i] <- drug
+    
+    head(df_response)
+  }
+  
+  #corner(df_response)
+  
+  return(df_response)
+}
+```
+
+The convert_drug_response_column() function is applied to get the drug X cell line matrix:
+
+```{r, apply_drug_matrix_convert_FXN}
+head(m.drug_response.IC50_AUC)
+m.IC50.GDSC <- convert_drug_response_column(X = m.drug_response.IC50_AUC, cell_line_index = 1, drug_index = 3, response_index = 6)
+m.AUC.GDSC <- convert_drug_response_column(X = m.drug_response.IC50_AUC, cell_line_index = 1, drug_index = 3, response_index = 7)
+
+dim(m.IC50.GDSC)
+corner(m.IC50.GDSC)
+
+dim(m.AUC.GDSC)
+corner(m.AUC.GDSC)
+
+test_CL_i <- which( m.drug_response.IC50_AUC[,1] == "22RV1" )
+test_drug_i <- which( m.drug_response.IC50_AUC[,3] == "Camptothecin" )
+test_CL_drug_i <- intersect(test_CL_i, test_drug_i)
+test_CL_drug_i
+
+m.drug_response.IC50_AUC[ test_CL_drug_i, ]
+corner(m.IC50.GDSC)
+corner(m.AUC.GDSC)
+
+test_CL_i2 <- which( m.drug_response.IC50_AUC[,1] == "786-0" )
+test_drug_i2 <- which( m.drug_response.IC50_AUC[,3] == "Nilotinib" )
+test_CL_drug_i2 <- intersect(test_CL_i2, test_drug_i2)
+test_CL_drug_i2
+
+m.drug_response.IC50_AUC[ test_CL_drug_i2, ]
+corner(m.IC50.GDSC)
+corner(m.AUC.GDSC)
+```
+
+## Clean up cell line IDs
+In order to match cell lines across data modalities (e.g. RNA / DNA) and across databases, cell line names are simplified by removing non-alphanumeric characters.
+
+```{r, clean_cell_line_IDs_in_drug}
+
+# DEFINE FUNCTION TO REMOVE NON-ALPHANUMERIC CHARACTERS
+remove_nonAlphaNumeric <- function(x){
+  
+  #x <- row.names(m.IC50.GDSC)
+  
+  alphanumeric <- c( LETTERS, letters, 0:9 )
+  alphanumeric
+  
+  x.split <- strsplit(x = x, split = "")
+  x.split[1:5]
+  
+  AN_only <- c()
+  for(i in 1:length(x.split)){
+    splt <- x.split[[i]]
+    splt
+    
+    rm_i <- which( !splt %in% alphanumeric )
+    if(length(rm_i) > 0){
+      splt2 <- splt[-rm_i]
+    }else{
+      splt2 <- splt
+    }
+    splt2
+    
+    AN_only <- c(AN_only, paste(splt2, collapse = ""))
+  }
+  
+  return(AN_only)
+}
+
+# REMOVE NON-ALPHANUMERIC CHARACTERS IN CELL LINE NAMES
+head(row.names(m.IC50.GDSC))
+head(row.names(m.AUC.GDSC))
+all.equal(row.names(m.IC50.GDSC), row.names(m.AUC.GDSC))
+
+CL_alphaNumeric <- remove_nonAlphaNumeric(x = row.names(m.IC50.GDSC))
+
+head(row.names(m.IC50.GDSC))
+head(CL_alphaNumeric)
+
+tail(row.names(m.IC50.GDSC))
+tail(CL_alphaNumeric)
+
+# ADD SAMPLE_ PREFIX
+CL_alphaNumeric.prefix <- paste( "SAMPLE", CL_alphaNumeric, sep = "_" )
+head(CL_alphaNumeric.prefix)
+tail(CL_alphaNumeric.prefix)
+
+# CAPITALIZE ALL LETTERS
+CL_alphaNumeric.prefix <- toupper(CL_alphaNumeric.prefix)
+
+# CHECK FOR DUPLICATE CELL LINE NAMES
+length(unique(CL_alphaNumeric.prefix))
+which(duplicated(CL_alphaNumeric.prefix))
+CL_alphaNumeric.prefix[777]
+which(CL_alphaNumeric.prefix == "SAMPLE_TT")
+row.names(m.IC50.GDSC)[c(754, 777)]
+
+# T.T: Esophageal squamous cell carcinoma, male, 67Y (https://web.expasy.org/cellosaurus/CVCL_3174)
+# TT: thyroid/medulla, female, 77Y (https://www.atcc.org/products/all/CRL-1803.aspx)
+# Exclude both cell lines to ensure no later confusion
+
+dim(m.IC50.GDSC)
+m.IC50.GDSC <- m.IC50.GDSC[ -c(754, 777), ]
+dim(m.IC50.GDSC)
+
+dim(m.AUC.GDSC)
+m.AUC.GDSC <- m.AUC.GDSC[ -c(754, 777), ]
+dim(m.AUC.GDSC)
+
+length(CL_alphaNumeric.prefix)
+CL_alphaNumeric.prefix <- CL_alphaNumeric.prefix[-c(754, 777)]
+length(CL_alphaNumeric.prefix)
+
+row.names(m.IC50.GDSC)[ c(754, 777) ]
+CL_alphaNumeric.prefix[ c(754, 777) ]
+
+# REPLACE ROW NAMES WITH CLEANED CELL LINE NAMES
+length(row.names(m.IC50.GDSC))
+length(CL_alphaNumeric.prefix)
+
+head( cbind(row.names(m.IC50.GDSC), CL_alphaNumeric.prefix), 25 )
+tail( cbind(row.names(m.IC50.GDSC), CL_alphaNumeric.prefix), 25 )
+
+row.names(m.IC50.GDSC) <- CL_alphaNumeric.prefix
+row.names(m.AUC.GDSC) <- CL_alphaNumeric.prefix
+```
+
+## Convert AUC to 1-AUC
+
+The Merajver lab AUC data is area under the 1-IC50 curve, where high values indicate sensitivity and low values indicate resistance. To make the GDSC AUC data consistent with this, I will convert the AUC drug response matrix to 1-AUC.
+
+```{r, convert_AUC}
+
+m.AUC.GDSC.orig <- m.AUC.GDSC[,]
+
+dim(m.AUC.GDSC.orig)
+corner(m.AUC.GDSC.orig)
+
+m.AUC.GDSC <- 1-m.AUC.GDSC.orig
+
+dim(m.AUC.GDSC)
+corner(m.AUC.GDSC)
+corner(m.IC50.GDSC)
+```
+
+## Z-transform drug response data
+
+Drug response distributions are highly variable in range across drugs, likely due in part to differences in drug concentrations tested and non-specific drug toxicity. I will z-transform the drug response distributions, with the expectation that with >600 cell lines, true sensitive and resistant values for each drug are present.
+
+```{r, z_transf_drug_data}
+boxplot(log(m.IC50.GDSC+1e-10), las = 2, outline = F)
+boxplot(m.AUC.GDSC, las = 2, outline = F)
+
+m.IC50.GDSC.z <- data.frame(apply(X = m.IC50.GDSC, MARGIN = 2, FUN = function(x) (x-mean(x, na.rm = T) ) / sd( x, na.rm = T ) ))
+m.AUC.GDSC.z <- data.frame(apply(X = m.AUC.GDSC, MARGIN = 2, FUN = function(x) (x-mean(x, na.rm = T) ) / sd( x, na.rm = T ) ))
+
+dim(m.IC50.GDSC.z)
+corner(m.IC50.GDSC.z)
+
+dim(m.AUC.GDSC.z)
+corner(m.AUC.GDSC.z)
+
+boxplot(m.IC50.GDSC.z, las = 2, outline = F, main = "IC50, z-transformed")
+boxplot(m.AUC.GDSC.z, las = 2, outline = F, main = "1-AUC, z-transformed")
+
+hist(m.IC50.GDSC[,2], col = "gray", border = NA)
+hist(m.IC50.GDSC.z[,2], col = "gray", border = NA)
+
+hist(m.IC50.GDSC[,3], col = "gray", border = NA)
+hist(m.IC50.GDSC.z[,3], col = "gray", border = NA)
+
+hist(m.AUC.GDSC[,2], col = "gray", border = NA)
+hist(m.AUC.GDSC.z[,2], col = "gray", border = NA)
+
+hist(m.AUC.GDSC[,3], col = "gray", border = NA)
+hist(m.AUC.GDSC.z[,3], col = "gray", border = NA)
+
+```
+
+## Save cleaned up and transcformed data
+
+With the drug data transformed into a matrix and the cell line names cleaned up, we will save the original and z-transformed matrices for downstream analysis
+
+```{r save_clean_drug_data}
+corner(m.IC50.GDSC)
+dim(m.IC50.GDSC)
+
+corner(m.AUC.GDSC)
+dim(m.AUC.GDSC)
+
+corner(m.IC50.GDSC.z)
+dim(m.IC50.GDSC.z)
+
+corner(m.AUC.GDSC.z)
+dim(m.AUC.GDSC.z)
+
+saveRDS(object = m.IC50.GDSC, file = "../data/GDSC/1_processed_class_data/class.LN_IC50.RDS")
+saveRDS(object = m.AUC.GDSC, file = "../data/GDSC/1_processed_class_data/class.1_AUC.RDS")
+saveRDS(object = m.IC50.GDSC.z, file = "../data/GDSC/1_processed_class_data/class.LN_IC50.z.RDS")
+saveRDS(object = m.AUC.GDSC.z, file = "../data/GDSC/1_processed_class_data/class.1_AUC.z.RDS")
+```
+
+## Filter to drugs in TNBC dataset
+
+```{r drugs_in_TNBC}
+
+m.AUC.TNBC <- readRDS( file = "../data/TNBC_Merajver/TNBC_2D.mAUC.RDS" )
+m.AUC.GDSC <- readRDS( file = "../data/GDSC/1_processed_class_data/class.1_AUC.RDS" )
+
+colnames(m.AUC.TNBC)
+colnames(m.AUC.GDSC)
+
+rename_drugs <- function(x){
+  #x <- names(m.AUC)
+  
+  originalColNames <- x
+  
+  updatedColNames1 <- remove_nonAlphaNumeric(originalColNames)
+  #rbind(originalColNames, updatedColNames1)
+  
+  updatedColNames2 <- toupper(updatedColNames1)
+  #rbind(originalColNames, updatedColNames2)
+  
+  updatedColNames3 <- gsub( "^X", "",  updatedColNames2)
+  #rbind(originalColNames, updatedColNames3)
+  
+  updatedColNames4 <- paste("DRUG_", updatedColNames3, sep = "")
+  #rbind(originalColNames, updatedColNames4)
+  
+  return(updatedColNames4)
+}
+
+drug_names.update <- rename_drugs(x = colnames(m.AUC.GDSC))
+drug_names.update
+
+colnames(m.AUC.GDSC) <- drug_names.update
+colnames(m.AUC.GDSC)
+
+drug_names.update.inTNBC1 <- intersect(drug_names.update, colnames(m.AUC.TNBC))
+sort(drug_names.update.inTNBC1)
+length(drug_names.update.inTNBC1)
+
+m.AUC.GDSC.inTNBC1 <- m.AUC.GDSC[ sort(drug_names.update.inTNBC1) ]
+dim(m.AUC.GDSC.inTNBC1)
+
+
+drug_names.update2 <- setdiff(drug_names.update, colnames(m.AUC.TNBC))
+drug_names.update2
+
+# 5-FU
+
+drug_names.update2[grep(pattern = "5F", x = drug_names.update2)] # DRUG_5FLUOROURACIL
+colnames(m.AUC.TNBC)[grep(pattern = "5F", x = colnames(m.AUC.TNBC))] # DRUG_5FU
+
+# Buparlisib
+
+drug_names.update2[grep(pattern = "BUP", x = drug_names.update2)] # DRUG_BUPARLISIB
+colnames(m.AUC.TNBC)[grep(pattern = "BUP", x = colnames(m.AUC.TNBC))] # NOT FOUND, NATE LEFT OUT SOME DRUGS THAT HAD REALLY BAD RESPONSE ACROSS THE BOARD
+sort(colnames(m.AUC.TNBC))
+
+# Fulvestrant
+
+drug_names.update2[grep(pattern = "FUL", x = drug_names.update2)] # DRUG_FULVESTRANT
+colnames(m.AUC.TNBC)[grep(pattern = "FUL", x = colnames(m.AUC.TNBC))] # NOT FOUND
+sort(colnames(m.AUC.TNBC))
+
+# Palbociclib
+
+drug_names.update2[grep(pattern = "PAL", x = drug_names.update2)] # DRUG_PALBOCICLIB
+colnames(m.AUC.TNBC)[grep(pattern = "PAL", x = colnames(m.AUC.TNBC))] # NOT FOUND
+
+# Sapatinib
+
+drug_names.update2[grep(pattern = "SAP", x = drug_names.update2)] # DRUG_SAPATINIB
+colnames(m.AUC.TNBC)[grep(pattern = "SAP", x = colnames(m.AUC.TNBC))] # NOT FOUND
+
+# Talazoparib
+
+drug_names.update[grep(pattern = "TAL", x = drug_names.update)] # DRUG_TALAZOPARIB
+colnames(m.AUC.TNBC)[grep(pattern = "TAL", x = colnames(m.AUC.TNBC))] # NOT FOUND
+
+# AZD-1775 / MK-1775
+
+drug_names.update2[grep(pattern = "MK1", x = drug_names.update2)] # DRUG_MK1775
+colnames(m.AUC.TNBC)[grep(pattern = "AZD1", x = colnames(m.AUC.TNBC))] # DRUG_AZD1775
+
+# VX-970 / VE-822
+
+drug_names.update2[grep(pattern = "VE8", x = drug_names.update2)] # DRUG_VE822
+colnames(m.AUC.TNBC)[grep(pattern = "VX", x = colnames(m.AUC.TNBC))] # DRUG_VX970
+
+
+additional_GDSC_drugs <- c( "DRUG_5FLUOROURACIL", "DRUG_MK1775", "DRUG_VE822" )
+additional.names_in_TNBC <- c( "DRUG_5FU", "DRUG_AZD1775", "DRUG_VX970" )
+
+m.AUC.GDSC.inTNBC2 <- m.AUC.GDSC[additional_GDSC_drugs]
+head(m.AUC.GDSC.inTNBC2)
+dim(m.AUC.GDSC.inTNBC2)
+
+colnames(m.AUC.GDSC.inTNBC2) <- additional.names_in_TNBC
+head(m.AUC.GDSC.inTNBC2)
+dim(m.AUC.GDSC.inTNBC2)
+
+intersect( colnames(m.AUC.GDSC.inTNBC2), colnames(m.AUC.TNBC) )
+all.equal(row.names(m.AUC.GDSC.inTNBC1), row.names(m.AUC.GDSC.inTNBC2))
+
+m.AUC.GDSC.inTNBC <- cbind(m.AUC.GDSC.inTNBC1, m.AUC.GDSC.inTNBC2)
+
+corner(m.AUC.GDSC.inTNBC)
+dim(m.AUC.GDSC.inTNBC)
+
+all_overlap <- sort(intersect(colnames(m.AUC.TNBC), colnames(m.AUC.GDSC.inTNBC)))
+all_overlap
+
+m.AUC.GDSC.inTNBC <- m.AUC.GDSC.inTNBC[all_overlap]
+m.AUC.TNBC.inGDSC <- m.AUC.TNBC[all_overlap]
+
+head(m.AUC.GDSC.inTNBC)
+head(m.AUC.TNBC.inGDSC)
+
+saveRDS( object = m.AUC.GDSC.inTNBC, file = "../data/GDSC/1_processed_class_data/class.1_AUC.inTNBC.RDS" )
+saveRDS( object = m.AUC.TNBC.inGDSC, file = "../data/TNBC_Merajver/TNBC_2D.mAUC.inGDSC.RDS" )
+
+```
+
+
+# Section 2: Cell line tissues and IDs
+
+Cell line annotation data was downloaded from the bulk data page on cancerrxgene.org: https://www.cancerrxgene.org/downloads/bulk_download
+https://www.cancerrxgene.org/downloads/bulk_download > All cell lines screened > Cell-line-annotation
+
+Direct link to file: ftp://ftp.sanger.ac.uk/pub/project/cancerrxgene/releases/release-8.0/Cell_Lines_Details.xlsx
+
+The cell line annotation file was from the 8.0 release (file uploaded: 10 July 2019) and downloaded by JPL on 17 September 2019.
+
+The annotation data were present as a multi-tab spreadsheet. Tab 2 of the spreadsheet contained a 4-column table with cell line name, COSMIC ID, and two tissue descriptions (site and histology). Tab 2 was saved as a tab-delimited text file, "Cell_Lines_Details.txt", which is processed here.
+
+## Import cell line annotations
+```{r, import_cell_line_annotations}
+FILE.annotation.GDSC <- "../data/GDSC/0_original_retrievals/Cell_Lines_Details.txt"
+m.cell_lines.GDSC <- read.table(file = FILE.annotation.GDSC, header = T, sep = "\t", row.names = 1, stringsAsFactors = F)
+head(m.cell_lines.GDSC)
+```
+
+## Clean up cell line names
+```{r, clean_cell_line_names_in_annotation}
+# REMOVE NON-ALPHANUMERIC, ADD PREFIX, CAPITALIZE ALL LETTERS
+IDs.CL.anno.clean1 <- remove_nonAlphaNumeric( x = row.names(m.cell_lines.GDSC) )
+head(IDs.CL.anno.clean1)
+
+IDs.CL.anno.clean2 <- paste("SAMPLE", IDs.CL.anno.clean1, sep = "_")
+head(IDs.CL.anno.clean2)
+
+IDs.CL.anno.clean3 <- toupper(IDs.CL.anno.clean2)
+head(IDs.CL.anno.clean3)
+
+# CHECK FOR DUPLICATE CLEAN IDs
+length(IDs.CL.anno.clean3)
+length(unique(IDs.CL.anno.clean3))
+
+IDs.CL.anno.clean3[which(duplicated(IDs.CL.anno.clean3))]
+
+row.names(m.cell_lines.GDSC)[ which(IDs.CL.anno.clean3 == "SAMPLE_KMH2") ]
+# KM-H2: Hodgkin lymphoma, Male, 37Y (https://web.expasy.org/cellosaurus/CVCL_1330)
+# KMH-2: Thyroid gland undifferentiated (anaplastic) carcinoma, Male, 71Y (https://web.expasy.org/cellosaurus/CVCL_S641)
+
+#row.names(m.cell_lines.GDSC)[ which(IDs.CL.anno.clean3 == "CL_TT") ]
+# TT duplicates described in drug response section (Section 1)
+
+# Both duplicate pairs are excluded to ensure that downstream analyses never accidentally selects different cell lines
+rm_ind <- c(which(IDs.CL.anno.clean3 == "SAMPLE_KMH2"), which(IDs.CL.anno.clean3 == "SAMPLE_TT"))
+rm_ind
+IDs.CL.anno.clean3[rm_ind]
+row.names(m.cell_lines.GDSC)[rm_ind]
+
+m.cell_lines.GDSC.nodup <- m.cell_lines.GDSC[ -rm_ind, ]
+dim(m.cell_lines.GDSC)
+dim(m.cell_lines.GDSC.nodup)
+
+IDs.CL.anno.clean3.nodup <- IDs.CL.anno.clean3[ -rm_ind ]
+length(IDs.CL.anno.clean3)
+length(IDs.CL.anno.clean3.nodup)
+
+# SET CLEAN IDS AS ROW.NAMES
+length(row.names(m.cell_lines.GDSC.nodup))
+length(IDs.CL.anno.clean3.nodup)
+
+head( cbind(row.names(m.cell_lines.GDSC.nodup), IDs.CL.anno.clean3.nodup), 25 )
+tail( cbind(row.names(m.cell_lines.GDSC.nodup), IDs.CL.anno.clean3.nodup), 25 )
+
+row.names(m.cell_lines.GDSC.nodup) <- IDs.CL.anno.clean3.nodup
+head(m.cell_lines.GDSC.nodup)
+```
+
+## Save clean cell line version
+```{r, save_clean_annotations}
+head(m.cell_lines.GDSC.nodup)
+saveRDS(object = m.cell_lines.GDSC.nodup, file = "../data/GDSC/tissues.GDSC.RDS")
+
+# m.cell_lines.GDSC.nodup <- readRDS(file = "../data/GDSC/tissues.GDSC.RDS")
+# head(m.cell_lines.GDSC.nodup)
+# dim(m.cell_lines.GDSC.nodup)
+# table(m.cell_lines.GDSC.nodup[,2])
+```
+
+# Section 3: RNA expression data
+
+Preprocessed RNA data were downloaded from the GDSC1000 resource in cancerrxgene.org: https://www.cancerrxgene.org/gdsc1000/GDSC1000_WebResources/Home.html
+
+Omic: EXP  
+DataType: Preprocessed  
+Objects: Cell-lines  
+Keywords: RMA normalised expression data for cell-lines  
+Details: RMA normalised basal expression profiles for all the cell-lines  
+Data/Link/Accession-number: Pathway Activity Scores (https://www.cancerrxgene.org/gdsc1000/GDSC1000_WebResources//Pathway_Activity_Scores.html)  
+Data item: Dataset (https://www.cancerrxgene.org/gdsc1000/GDSC1000_WebResources//Data/preprocessed/Cell_line_RMA_proc_basalExp.txt.zip)  
+Help: ? (https://www.cancerrxgene.org/gdsc1000/GDSC1000_WebResources//Home_files/Extended%20Methods.html#6)  
+
+The link in paratheses after "Data item: Dataset" above is a direct link to the file processed here. RNA expression data are from the Affymetrix human genome U219 array. Data are provided as RMA normalized intensities. RNA data were downloaded by JPL on 29 January 2020
+
+The microarray targets transcripts corresponding to 20,162 unique UniGene IDs, 20,086 unique Entrez Gene IDs (or combinations of Gene IDs, e.g. "340307 /// 441294"), and 19,523 unique Ensembl Gene IDs (or unique combinations of Ensembl Gene IDs, e.g. "ENSG00000278145 /// ENSG00000278505 /// OTTHUMG00000188467 /// OTTHUMG00000191246"). These counts were generated by downloading the U219 microarray annotation data and removing duplicates (Excel) from the "UniGene ID", "Entrez Gene", and "Ensembl" columns.
+Annotation file: "HG-U219 Annotations, CSV format, Release 36 (38 MB, 4/13/16)", http://www.affymetrix.com/Auth/analysis/downloads/na36/ivt/HG-U219.na36.annot.csv.zip (Downloaded by JPL on 29 Jan 2020)
+
+The pre-processed text file contains 17,418 rows with unique gene symbols, and therefore ~2,500-3,000 genes targeted by the microarray are unaccounted for.
+
+## Initial data import
+```{r, import_RNA_data}
+FILE.RNA.GDSC <- "../data/GDSC/0_original_retrievals/Cell_line_RMA_proc_basalExp.txt"
+FILE.RNA.GDSC
+m.RNA.GDSC.initial <- read.table(file = FILE.RNA.GDSC, header = T, sep = "\t", stringsAsFactors = F)
+corner(m.RNA.GDSC.initial)
+dim(m.RNA.GDSC.initial)
+# Only 10,056 rows are being imported, while the original file contains 17,738 rows
+# I cannot explain why so many rows are not imported, especially with no errors or warnings from R. I proceed to import the file line by line with readLines() and process it from there
+
+m.RNA.GDSC.initial2 <- readLines(FILE.RNA.GDSC)
+length(m.RNA.GDSC.initial2) #[1] 17738; all lines imported here
+
+saveRDS( object = m.RNA.GDSC.initial2, file = "../data/GDSC/2_processed_feature_data/init.feat_RNA1.RDS" )
+
+head(strsplit(x = m.RNA.GDSC.initial2[1], split = "\t")[[1]], 50)
+head(strsplit(x = m.RNA.GDSC.initial2[2], split = "\t")[[1]], 50)
+
+process_readLines_to_table <- function( X, SPLIT ){
+  #X <- m.RNA.GDSC.initial2
+  #SPLIT <- "\t"
+  
+  outTable <- strsplit(x = X[1], split = "\t")[[1]]
+  for(i in 2:length(X)){
+    
+    if(i %% 1000 == 0){
+      print(i)
+    }
+    
+    lineSplit <- strsplit(x = X[i], split = "\t")[[1]]
+    lineSplit
+    
+    outTable <- rbind(outTable, lineSplit)
+  }
+  
+  rownames(outTable) <- NULL
+  outTable[1:10,1:10]
+  dim(outTable)
+  
+  return(outTable)
+}
+
+# The process_readLines_to_table() function takes ~1 hr to run
+# This command and following conversion to data.frame are commented out so that the file can be knitted efficiently, but all commands that were used remain here
+
+#m.RNA.GDSC.initial3 <- process_readLines_to_table( X = m.RNA.GDSC.initial2, SPLIT = "\t" )
+
+#dim(m.RNA.GDSC.initial3)
+#m.RNA.GDSC.initial3[1:10, 1:10]
+
+#m.RNA.GDSC.initial3.df <- data.frame(m.RNA.GDSC.initial3, stringsAsFactors = F)
+
+#corner(m.RNA.GDSC.initial3.df)
+#tail(m.RNA.GDSC.initial3.df[1:5], 10)
+#m.RNA.GDSC.initial3.df[,1]
+#m.RNA.GDSC.initial3.df[,10]
+
+# SAVE INITIAL READLINES -> TABLE CONVERT
+#saveRDS( object = m.RNA.GDSC.initial3.df, file = "../data/GDSC/2_processed_feature_data/init.feat_RNA2.RDS" )
+
+m.RNA.GDSC.initial <- readRDS(file = "../data/GDSC/2_processed_feature_data/init.feat_RNA2.RDS")
+
+corner(m.RNA.GDSC.initial)
+tail(m.RNA.GDSC.initial[1:10], 10)
+dim(m.RNA.GDSC.initial)
+
+# REMOVE GENE TITLE
+m.RNA.GDSC.initial <- m.RNA.GDSC.initial[,-2]
+corner(m.RNA.GDSC.initial)
+dim(m.RNA.GDSC.initial)
+
+# REMOVE ROWS WITH NO GENE NAME
+gene_names <- m.RNA.GDSC.initial[,1]
+tail(gene_names)
+no_geneNm_ind <- which(gene_names == "")
+length(no_geneNm_ind)
+head(no_geneNm_ind)
+
+m.RNA.GDSC.initial <- m.RNA.GDSC.initial[ -no_geneNm_ind, ]
+
+corner(m.RNA.GDSC.initial)
+dim(m.RNA.GDSC.initial)
+
+# CHECK FOR DUPLICATE GENE NAMES
+gene_names <- m.RNA.GDSC.initial[,1]
+tail(gene_names)
+which(gene_names == "")
+
+length(gene_names) # [1] 17420
+length(unique(gene_names)) # [1] 17420; no duplicates!
+
+# SET GENE NAMES AS ROW NAMES
+m.RNA.GDSC.initial <- data.frame(m.RNA.GDSC.initial[-1], row.names = m.RNA.GDSC.initial[,1])
+corner(m.RNA.GDSC.initial)
+
+# SET SAMPLE NAMES AS COL NAMES
+
+row1 <- unlist(m.RNA.GDSC.initial[1,])
+head(row1, 25)
+corner(m.RNA.GDSC.initial)
+
+m.RNA.GDSC.initial <- m.RNA.GDSC.initial[ -1, ]
+names(m.RNA.GDSC.initial) <- row1
+
+corner(m.RNA.GDSC.initial)
+
+saveRDS( object = m.RNA.GDSC.initial, file = "../data/GDSC/2_processed_feature_data/tmp.feat_RNA1.RDS" )
+
+m.RNA.GDSC.initial <- readRDS(file = "../data/GDSC/2_processed_feature_data/tmp.feat_RNA1.RDS")
+
+# CONVERT TO NUMERIC FROM STRINGS
+
+corner(m.RNA.GDSC.initial)
+dim(m.RNA.GDSC.initial)
+
+sample_names <- names(m.RNA.GDSC.initial)
+gene_names <- row.names(m.RNA.GDSC.initial)
+
+# This apply() function will both convert to numeric and result in a transposed matrix
+m.RNA.GDSC.initial.numeric <- data.frame( apply( X = m.RNA.GDSC.initial, MARGIN = 1, FUN = as.numeric ) )
+
+corner(m.RNA.GDSC.initial.numeric)
+dim(m.RNA.GDSC.initial.numeric)
+head(m.RNA.GDSC.initial.numeric[,1])
+
+names(m.RNA.GDSC.initial.numeric) <- gene_names
+row.names(m.RNA.GDSC.initial.numeric) <- sample_names
+
+corner(m.RNA.GDSC.initial)
+corner(m.RNA.GDSC.initial.numeric)
+
+# To save some memory and loading time, microarray intensities will be rounded to 3 decimal places
+m.RNA.GDSC.initial.numeric <- round( x =  m.RNA.GDSC.initial.numeric, digits = 3 )
+
+corner(m.RNA.GDSC.initial.numeric)
+
+saveRDS(object = m.RNA.GDSC.initial.numeric, file = "../data/GDSC/2_processed_feature_data/tmp.feat_RNA2.RDS")
+```
+
+## Replace COSMIC IDs with cell line names
+```{r, clean_cell_line_IDs_in_RNA}
+# CELL LINE IDs SHOULD BE CONVERTED TO NAMES
+# IDs LOOK TO BE COSMIC IDs
+# Check to be sure CL IDs are COSMIC IDs using cell line annotation data
+m.cell_lines.GDSC <- readRDS(file = "../data/GDSC/tissues.GDSC.RDS")
+head(m.cell_lines.GDSC)
+
+RNA_CL_IDs <- gsub( pattern = "DATA.", replacement = "", x = row.names(m.RNA.GDSC.initial.numeric) )
+head(RNA_CL_IDs)
+
+RNA_CL_IDs[1] %in% m.cell_lines.GDSC[,1]
+
+length(which(RNA_CL_IDs %in% m.cell_lines.GDSC[,1]))
+length(RNA_CL_IDs) # Can associate 973 of 1018 cell lines with COSMIC IDs in annotation data
+
+# IDs look to be COSMIC IDs, move forward converting COSMIC IDs to cell line names
+
+head(row.names(m.RNA.GDSC.initial.numeric))
+head(RNA_CL_IDs)
+
+tail(row.names(m.RNA.GDSC.initial.numeric))
+tail(RNA_CL_IDs)
+
+row.names(m.RNA.GDSC.initial.numeric) <- RNA_CL_IDs
+corner(m.RNA.GDSC.initial.numeric)
+
+# Prepare COSMIC <-> NAME conversion vector
+name_COSMIC_vec <- row.names(m.cell_lines.GDSC)
+names(name_COSMIC_vec) <- m.cell_lines.GDSC[,1]
+head(name_COSMIC_vec)
+head(RNA_CL_IDs)
+
+# Subset RNA data to those cell lines that can be associated with a COSMIC ID
+matched_IDs <- intersect( row.names(m.RNA.GDSC.initial.numeric), names(name_COSMIC_vec) )
+length(matched_IDs)
+
+m.RNA.GDSC.initial.numeric.matched <- m.RNA.GDSC.initial.numeric[ matched_IDs, ]
+corner(m.RNA.GDSC.initial.numeric.matched)
+dim(m.RNA.GDSC.initial.numeric.matched)
+dim(m.RNA.GDSC.initial.numeric)
+
+length( which(names(name_COSMIC_vec) %in% row.names(m.RNA.GDSC.initial.numeric.matched)) )
+length(name_COSMIC_vec)
+
+# Sort COSMIC <-> NAME conversion vector based on the order in the RNA data
+name_COSMIC_vec <- name_COSMIC_vec[ row.names(m.RNA.GDSC.initial.numeric.matched) ]
+length(name_COSMIC_vec)
+length( which(names(name_COSMIC_vec) %in% row.names(m.RNA.GDSC.initial.numeric.matched)) )
+
+head(name_COSMIC_vec)
+head(row.names(m.RNA.GDSC.initial.numeric.matched))
+
+# Replace COSMIC IDs with cell line names in RNA data
+head( cbind(name_COSMIC_vec, row.names(m.RNA.GDSC.initial.numeric.matched)), 25 )
+tail( cbind(name_COSMIC_vec, row.names(m.RNA.GDSC.initial.numeric.matched)), 25 )
+
+corner(m.RNA.GDSC.initial.numeric.matched)
+row.names(m.RNA.GDSC.initial.numeric.matched) <- name_COSMIC_vec
+corner(m.RNA.GDSC.initial.numeric.matched)
+
+# Save a mid-pipeline version
+saveRDS(object = m.RNA.GDSC.initial.numeric.matched, file = "../data/GDSC/2_processed_feature_data/tmp.feat_RNA3.RDS")
+```
+
+## Replace gene symbols with ENSG IDs
+Gene IDs in the RNA data are present as gene symbols. I will convert these to ENSG IDs to be consistent with RNA expression data from the Merajver lab datasets (previously processed RNA datasets from CCLE and Klijn 2015 are also annotated with ENSG IDs).
+
+Special cases to consider are:  
+1) Gene symbols that cannot be assocaited with an ENSG ID. These columns will be excluded.  
+2) Gene symbols associated with multiple ENSG ID. As I do not know which ENSG IDs are used in other datasets, I will keep duplicate data columns, one named for each available ENSG. 
+
+```{r, replace_gene_symbols_in_RNA}
+m.RNA.GDSC.sym <- readRDS(file = "../data/GDSC/2_processed_feature_data/tmp.feat_RNA3.RDS")
+corner(m.RNA.GDSC.sym)
+
+#install.packages("BiocManager")
+#library(BiocManager)
+#BiocManager::install("org.Hs.eg.db")
+library(org.Hs.eg.db)
+
+gene_sym <- names(m.RNA.GDSC.sym)
+head(gene_sym)
+
+gene_ENSG <- mapIds(x = org.Hs.eg.db, keys = gene_sym, column = "ENSEMBL", keytype = "SYMBOL", multiVals = "list")
+gene_ENSG[1:25]
+
+# Note ABP1 with no ENSG ID and KRIT1 with multiple IDs
+
+convert_GDSC_sym <- function(X, conv_list){
+  
+  #X <- m.RNA.GDSC.sym[1:500]
+  #conv_list <- gene_ENSG[1:500]
+  
+  dim(X)
+  length(conv_list)
+  
+  df_conv <- data.frame( row.names = row.names(X) )
+  for(i in 1:ncol(X)){
+    #print(i)
+    gene_sym <- names(X)[i]
+    ENSG_IDs <- conv_list[[i]]
+    gene_sym
+    ENSG_IDs
+    
+    proceed <- FALSE
+    if( length(ENSG_IDs) >= 2 ){
+      proceed <- TRUE
+    }else if( !is.na(ENSG_IDs) ){
+      proceed <- TRUE
+    }
+    proceed
+    
+    if(proceed){
+      
+      data_col <- X[,i]
+      sub_df <- data.frame(row.names = row.names(X))
+      for(j in 1:length(ENSG_IDs)){
+        sub_df <- cbind(sub_df, data_col)
+      }
+      
+      names(sub_df) <- ENSG_IDs
+      head(sub_df)
+      
+      df_conv <- cbind(df_conv, sub_df)
+    }
+    
+    head(df_conv)
+  }
+  
+  dim(df_conv)
+  df_conv[1:20, 1:20]
+  
+  return(df_conv)
+}
+
+# The convert_GDSC_sym() function takes ~30 min to run. It is commented out here so the file will knit efficiently
+#m.RNA.GDSC.ENSG <- convert_GDSC_sym( X = m.RNA.GDSC.sym, conv_list = gene_ENSG )
+
+m.RNA.GDSC.ENSG <- readRDS( file = "../data/GDSC/2_processed_feature_data/FEATURE_TABLE.RNA.ENSG.RDS" )
+
+dim(m.RNA.GDSC.ENSG)
+corner(m.RNA.GDSC.ENSG)
+
+gene_ENSG[18]
+head(m.RNA.GDSC.ENSG[c(18:19)])
+
+saveRDS(object = m.RNA.GDSC.ENSG, file = "../data/GDSC/2_processed_feature_data/FEATURE_TABLE.RNA.ENSG.RDS")
+```
+
+```{r preprocess_RNA_levels}
+
+m.RNA <- readRDS( file = "../data/GDSC/2_processed_feature_data/FEATURE_TABLE.RNA.ENSG.RDS" )
+
+which(is.na(m.RNA))
+
+hist( as.matrix(m.RNA), col = "gray", border = NA )
+
+m.RNA.center <- scale_center_matrix(X = m.RNA, MARGIN = 2)
+m.RNA.center <- data.frame(m.RNA.center)
+
+head(names(m.RNA.center))
+head(row.names(m.RNA.center))
+corner(m.RNA.center)
+
+saveRDS( object = m.RNA.center, file = "../data/GDSC/2_processed_feature_data/FEATURE_TABLE.RNA_center.ENSG.RDS" )
+```
+
+## Cell lines in common among tissue, drug, and RNA data
+
+```{r cellLine_gene_filtering}
+m.AUC.GDSC <- readRDS(file = "../data/GDSC/1_processed_class_data/class.1_AUC.inTNBC.RDS")
+m.RNA.GDSC <- readRDS(file = "../data/GDSC/2_processed_feature_data/FEATURE_TABLE.RNA_center.ENSG.RDS")
+m.tissue.GDSC <- readRDS(file = "../data/GDSC/tissues.GDSC.RDS")
+
+dim(m.AUC.GDSC)
+dim(m.RNA.GDSC)
+dim(m.tissue.GDSC)
+
+head(row.names(m.AUC.GDSC))
+head(row.names(m.RNA.GDSC))
+head(row.names(m.tissue.GDSC))
+
+common_cell_lines1 <- intersect( row.names(m.AUC.GDSC), row.names(m.RNA.GDSC) )
+common_cell_lines2 <- intersect(common_cell_lines1, row.names(m.tissue.GDSC) )
+
+nrow(m.AUC.GDSC)
+nrow(m.RNA.GDSC)
+nrow(m.tissue.GDSC)
+length(common_cell_lines1)
+length(common_cell_lines2)
+
+m.AUC.GDSC.common1 <- m.AUC.GDSC[common_cell_lines2,]
+m.RNA.GDSC.common1 <- m.RNA.GDSC[common_cell_lines2,]
+m.tissue.GDSC.common1 <- m.tissue.GDSC[common_cell_lines2,]
+
+saveRDS( object = m.AUC.GDSC.common, file = "../data/GDSC/1_processed_class_data/class.1_AUC.inTNBC.common.RDS" )
+saveRDS( object = m.RNA.GDSC.common, file = "../data/GDSC/2_processed_feature_data/FEATURE_TABLE.RNA_center.ENSG.common.RDS" )
+saveRDS( object = m.tissue.GDSC.common, file = "../data/GDSC/tissues.GDSC.common.RDS" )
+
+tissue_table <- sort(table(m.tissue.GDSC.common[,2]), decreasing = T)
+
+785*0.7
+tissue_table
+tissue_table[1]/sum(tissue_table)*100 # 17.57962
+
+```
+
